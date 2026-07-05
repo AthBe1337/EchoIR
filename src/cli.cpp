@@ -56,7 +56,7 @@ void usage() {
         << "  echoir ac [--brand midea|--brand-code 00] [--power on] [--mode cool] [--temp 26] [--fan mid]\n"
         << "\n"
         << "Common options:\n"
-        << "  --port PATH        Serial device, default /dev/ttyUSB0\n"
+        << "  --port PATH        Serial device, e.g. /dev/ttyUSB0 or COM3, default /dev/ttyUSB0\n"
         << "  --baud RATE        9600/19200/38400/57600/115200, default 115200\n"
         << "  --address HEX      Module address for downlink, default FF broadcast\n"
         << "  --profile high     high supports internal slots 0..95, basic supports 0..6\n"

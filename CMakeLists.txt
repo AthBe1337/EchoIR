@@ -19,7 +19,9 @@ target_include_directories(echoir
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-if(UNIX)
+if(WIN32)
+    target_compile_definitions(echoir PRIVATE ECHOIR_HAS_WIN32_SERIAL=1)
+elseif(UNIX)
     target_compile_definitions(echoir PRIVATE ECHOIR_HAS_POSIX_SERIAL=1)
 endif()
 
@@ -39,4 +41,3 @@ target_compile_options(echoir_tests PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
 )
 add_test(NAME echoir_tests COMMAND echoir_tests)
-

@@ -28,10 +28,10 @@ public:
     Bytes readSome(std::size_t maxBytes, std::chrono::milliseconds timeout) override;
 
 private:
-    int fd_ = -1;
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
 std::unique_ptr<ITransport> openSerialTransport(const std::string& path, int baudRate);
 
 }  // namespace echoir
-
