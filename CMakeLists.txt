@@ -33,6 +33,10 @@ add_executable(echoir-cli src/cli.cpp)
 target_link_libraries(echoir-cli PRIVATE echoir)
 set_target_properties(echoir-cli PROPERTIES OUTPUT_NAME echoir)
 
+if(MINGW)
+    target_link_options(echoir-cli PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
+
 enable_testing()
 
 add_executable(echoir_tests tests/test_echoir.cpp)
@@ -40,4 +44,7 @@ target_link_libraries(echoir_tests PRIVATE echoir)
 target_compile_options(echoir_tests PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
 )
+if(MINGW)
+    target_link_options(echoir_tests PRIVATE -static -static-libgcc -static-libstdc++)
+endif()
 add_test(NAME echoir_tests COMMAND echoir_tests)
