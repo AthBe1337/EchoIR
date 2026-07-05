@@ -13,6 +13,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <sstream>
 #include <unordered_map>
 #include <vector>
 
@@ -56,14 +57,15 @@ void usage() {
         << "  echoir list [--dir .]\n"
         << "  echoir dump --in tv_power.json\n"
         << "  echoir ac [--brand midea|--brand-code 00] [--power on] [--mode cool] [--temp 26] [--fan mid]\n"
-        << "  echoir ac-official --protocol midea1|midea2 [--power on] [--mode cool] [--temp 24] [--fan auto] [--swing-index 0]\n"
+        << "  echoir ac-official --protocol midea1 [--power on] [--mode cool] [--temp 24] [--fan auto] [--swing-index 0]\n"
+        << "  echoir ac-official --protocol gree1 --fields 32=1,33=1,37=8 --dry-run\n"
         << "\n"
         << "Common options:\n"
         << "  --port PATH        Serial device, e.g. /dev/ttyUSB0 or COM3, default /dev/ttyUSB0\n"
         << "  --baud RATE        9600/19200/38400/57600/115200, default 115200\n"
         << "  --address HEX      Module address for downlink, default FF broadcast\n"
         << "  --profile high     high supports internal slots 0..95, basic supports 0..6\n"
-        << "  --dry-run          For ac command, print frames without opening serial\n";
+        << "  --dry-run          For ac/ac-official commands, print frames without opening serial\n";
 }
 
 ParsedArgs parseArgs(int argc, char** argv) {
@@ -182,6 +184,37 @@ std::string normalizedOption(std::string text) {
     return text;
 }
 
+std::string trim(std::string text) {
+    const auto begin = std::find_if_not(text.begin(), text.end(), [](unsigned char c) {
+        return std::isspace(c) != 0;
+    });
+    const auto end = std::find_if_not(text.rbegin(), text.rend(), [](unsigned char c) {
+        return std::isspace(c) != 0;
+    }).base();
+    if (begin >= end) {
+        return {};
+    }
+    return std::string(begin, end);
+}
+
+std::string officialProtocolNames() {
+    std::ostringstream out;
+    bool first = true;
+    for (const auto protocol : echoir::officialAcProtocols()) {
+        if (!first) {
+            out << ", ";
+        }
+        first = false;
+        out << echoir::officialAcProtocolName(protocol);
+    }
+    return out.str();
+}
+
+bool hasFriendlyOfficialOptions(const ParsedArgs& args) {
+    return args.has("power") || args.has("mode") || args.has("temp") || args.has("fan") ||
+           args.has("swing-index") || args.has("timer-index");
+}
+
 template <typename Options>
 void applyCommonMideaOptions(const ParsedArgs& args, Options& options) {
     if (args.has("power")) {
@@ -202,6 +235,61 @@ void applyCommonMideaOptions(const ParsedArgs& args, Options& options) {
             throw std::invalid_argument("--swing-index must be 0..16");
         }
         options.swingIndex = static_cast<std::uint8_t>(swing);
+    }
+}
+
+void applyCommonMideaFields(const ParsedArgs& args, echoir::OfficialAcState& state) {
+    if (args.has("power")) {
+        state.setField(32, echoir::parseAcPower(args.get("power")) == echoir::AcPower::On ? 1 : 0);
+    }
+    if (args.has("mode")) {
+        state.setField(33, static_cast<std::uint8_t>(echoir::parseAcMode(args.get("mode"))));
+    }
+    if (args.has("temp")) {
+        const int temperature = parseInt(args.get("temp"), "temp");
+        if (temperature < 17 || temperature > 30) {
+            throw std::invalid_argument("--temp must be 17..30 for official Midea protocols");
+        }
+        state.setField(34, static_cast<std::uint8_t>(temperature - 17));
+    }
+    if (args.has("fan")) {
+        state.setField(35, static_cast<std::uint8_t>(echoir::parseAcFan(args.get("fan"))));
+    }
+    if (args.has("swing-index")) {
+        const int swing = parseInt(args.get("swing-index"), "swing-index");
+        if (swing < 0 || swing > 16) {
+            throw std::invalid_argument("--swing-index must be 0..16");
+        }
+        state.setField(36, static_cast<std::uint8_t>(swing));
+    }
+}
+
+void applyOfficialFields(const ParsedArgs& args, echoir::OfficialAcState& state) {
+    if (!args.has("fields")) {
+        return;
+    }
+
+    const std::string fields = args.get("fields");
+    std::size_t start = 0;
+    while (start <= fields.size()) {
+        const auto end = fields.find(',', start);
+        const auto token = trim(fields.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        if (token.empty()) {
+            throw std::invalid_argument("--fields contains an empty assignment");
+        }
+
+        const auto equals = token.find('=');
+        if (equals == std::string::npos) {
+            throw std::invalid_argument("--fields assignments must use OFFSET=VALUE");
+        }
+        const int offset = parseInt(trim(token.substr(0, equals)), "field offset");
+        const auto value = parseByte(trim(token.substr(equals + 1)), "field value");
+        state.setField(offset, value);
+
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
     }
 }
 
@@ -298,9 +386,20 @@ void handleAc(const ParsedArgs& args) {
 }
 
 void handleAcOfficial(const ParsedArgs& args) {
-    const auto protocol = normalizedOption(args.get("protocol", "midea1"));
+    if (args.has("list-protocols")) {
+        std::cout << officialProtocolNames() << "\n";
+        return;
+    }
+
+    const auto parsedProtocol = echoir::parseOfficialAcProtocol(args.get("protocol", "midea1"));
+    if (!parsedProtocol) {
+        throw std::invalid_argument("unknown official AC protocol; supported: " + officialProtocolNames());
+    }
+
+    const auto protocol = *parsedProtocol;
+    const std::string protocolName = echoir::officialAcProtocolName(protocol);
     Bytes code;
-    if (protocol == "midea1") {
+    if (protocol == echoir::OfficialAcProtocol::Midea1 && !args.has("fields")) {
         echoir::OfficialMidea1Options options;
         applyCommonMideaOptions(args, options);
         if (args.has("timer-index")) {
@@ -311,7 +410,7 @@ void handleAcOfficial(const ParsedArgs& args) {
             options.timerIndex = static_cast<std::uint8_t>(timer);
         }
         code = echoir::encodeOfficialMidea1(options);
-    } else if (protocol == "midea2") {
+    } else if (protocol == echoir::OfficialAcProtocol::Midea2 && !args.has("fields")) {
         if (args.has("timer-index")) {
             throw std::invalid_argument("--timer-index is only supported by --protocol midea1");
         }
@@ -319,7 +418,29 @@ void handleAcOfficial(const ParsedArgs& args) {
         applyCommonMideaOptions(args, options);
         code = echoir::encodeOfficialMidea2(options);
     } else {
-        throw std::invalid_argument("currently supported official AC protocols: midea1, midea2");
+        if (hasFriendlyOfficialOptions(args) &&
+            protocol != echoir::OfficialAcProtocol::Midea1 &&
+            protocol != echoir::OfficialAcProtocol::Midea2) {
+            throw std::invalid_argument("friendly official AC options are only supported by midea1/midea2; use --fields for this protocol");
+        }
+        if (args.has("timer-index") && protocol == echoir::OfficialAcProtocol::Midea2) {
+            throw std::invalid_argument("--timer-index is only supported by --protocol midea1");
+        }
+
+        auto state = echoir::defaultOfficialAcState(protocol);
+        if (protocol == echoir::OfficialAcProtocol::Midea1 ||
+            protocol == echoir::OfficialAcProtocol::Midea2) {
+            applyCommonMideaFields(args, state);
+            if (args.has("timer-index")) {
+                const int timer = parseInt(args.get("timer-index"), "timer-index");
+                if (timer < 0 || timer > 7) {
+                    throw std::invalid_argument("--timer-index must be 0..7");
+                }
+                state.setField(37, static_cast<std::uint8_t>(timer));
+            }
+        }
+        applyOfficialFields(args, state);
+        code = echoir::encodeOfficialAc(state);
     }
 
     const auto address = parseByte(args.get("address", "FF"), "address");
@@ -327,7 +448,7 @@ void handleAcOfficial(const ParsedArgs& args) {
 
     if (args.has("out")) {
         echoir::StoredCode stored;
-        stored.name = args.get("name", protocol + "_official");
+        stored.name = args.get("name", protocolName + "_official");
         stored.createdAt = echoir::currentTimestamp();
         stored.address = address;
         stored.afn = 0x22;

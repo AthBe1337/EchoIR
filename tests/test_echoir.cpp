@@ -110,6 +110,16 @@ void testAcEncoding() {
     require(brand && *brand == 0x10, "builtin midea brand code");
     const auto gree = echoir::resolveAcBrand("gree");
     require(gree && *gree == 0x00, "builtin gree brand code");
+    const auto haier1 = echoir::resolveAcBrand("haier1");
+    require(haier1 && *haier1 == 0x20, "builtin haier1 brand code");
+    const auto haier2 = echoir::resolveAcBrand("haier2");
+    require(haier2 && *haier2 == 0x21, "builtin haier2 brand code");
+    const auto haier3 = echoir::resolveAcBrand("haier3");
+    require(haier3 && *haier3 == 0x22, "builtin haier3 brand code");
+    const auto haier4 = echoir::resolveAcBrand("haier4");
+    require(haier4 && *haier4 == 0x23, "builtin haier4 brand code");
+    const auto chiq1 = echoir::resolveAcBrand("chiq1");
+    require(chiq1 && *chiq1 == 0x80, "builtin chiq1 brand code");
     const auto daikin2 = echoir::resolveAcBrand("daikin2");
     require(daikin2 && *daikin2 == 0x91, "builtin daikin2 brand code");
 }
@@ -159,6 +169,33 @@ void testOfficialMidea2Encoding() {
     requireEq(decoded.data, code, "Midea2 official frame payload");
 }
 
+void testOfficialAllProtocolEncoders() {
+    const auto& protocols = echoir::officialAcProtocols();
+    require(protocols.size() == 21, "official AC protocol count");
+
+    for (const auto protocol : protocols) {
+        const std::string name = echoir::officialAcProtocolName(protocol);
+        const auto parsed = echoir::parseOfficialAcProtocol(name);
+        require(parsed && *parsed == protocol, "official AC protocol parser: " + name);
+
+        const auto state = echoir::defaultOfficialAcState(protocol);
+        const auto durations = echoir::generateOfficialAcDurations(state);
+        require(!durations.empty(), "official AC durations empty: " + name);
+        for (const auto duration : durations) {
+            require(duration > 0, "official AC duration must be positive: " + name);
+        }
+
+        const auto code = echoir::encodeOfficialAc(state);
+        require(!code.empty(), "official AC compressed code empty: " + name);
+        require(code.size() <= 0x310, "official AC compressed code exceeds module payload limit: " + name);
+
+        const auto frame = echoir::encodeFrame(0xFF, 0x22, code);
+        const auto decoded = echoir::decodeFrame(frame);
+        require(decoded.afn == 0x22, "official AC frame AFN: " + name);
+        requireEq(decoded.data, code, "official AC frame payload: " + name);
+    }
+}
+
 void testDeviceAckCommand() {
     auto fake = fakeWithRead(echoir::fromHex("68 08 00 00 01 00 01 16"));
     auto* raw = fake.get();
@@ -206,6 +243,7 @@ int main() {
         {"ac_encoding", testAcEncoding},
         {"official_midea1_encoding", testOfficialMidea1Encoding},
         {"official_midea2_encoding", testOfficialMidea2Encoding},
+        {"official_all_protocol_encoders", testOfficialAllProtocolEncoders},
         {"device_ack_command", testDeviceAckCommand},
         {"device_read_internal", testDeviceReadInternal},
         {"code_store", testCodeStore},
