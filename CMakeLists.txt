@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(echoir
     src/ac.cpp
+    src/ac_official.cpp
     src/code_store.cpp
     src/device.cpp
     src/frame.cpp

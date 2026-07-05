@@ -1,10 +1,12 @@
 #include "echoir/ac.hpp"
+#include "echoir/ac_official.hpp"
 #include "echoir/code_store.hpp"
 #include "echoir/device.hpp"
 #include "echoir/serial.hpp"
 
-#include <filesystem>
+#include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -54,6 +56,7 @@ void usage() {
         << "  echoir list [--dir .]\n"
         << "  echoir dump --in tv_power.json\n"
         << "  echoir ac [--brand midea|--brand-code 00] [--power on] [--mode cool] [--temp 26] [--fan mid]\n"
+        << "  echoir ac-official --protocol midea1|midea2 [--power on] [--mode cool] [--temp 24] [--fan auto] [--swing-index 0]\n"
         << "\n"
         << "Common options:\n"
         << "  --port PATH        Serial device, e.g. /dev/ttyUSB0 or COM3, default /dev/ttyUSB0\n"
@@ -169,6 +172,39 @@ std::string defaultOutputForName(const std::string& name) {
     return name.empty() ? "ir_code.json" : name + ".json";
 }
 
+std::string normalizedOption(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+        if (c == '-') {
+            return '_';
+        }
+        return static_cast<char>(std::tolower(c));
+    });
+    return text;
+}
+
+template <typename Options>
+void applyCommonMideaOptions(const ParsedArgs& args, Options& options) {
+    if (args.has("power")) {
+        options.power = echoir::parseAcPower(args.get("power")) == echoir::AcPower::On;
+    }
+    if (args.has("mode")) {
+        options.mode = echoir::parseAcMode(args.get("mode"));
+    }
+    if (args.has("temp")) {
+        options.temperature = parseInt(args.get("temp"), "temp");
+    }
+    if (args.has("fan")) {
+        options.fan = echoir::parseAcFan(args.get("fan"));
+    }
+    if (args.has("swing-index")) {
+        const int swing = parseInt(args.get("swing-index"), "swing-index");
+        if (swing < 0 || swing > 16) {
+            throw std::invalid_argument("--swing-index must be 0..16");
+        }
+        options.swingIndex = static_cast<std::uint8_t>(swing);
+    }
+}
+
 void handleAc(const ParsedArgs& args) {
     struct Command {
         echoir::AcParameter parameter;
@@ -261,6 +297,55 @@ void handleAc(const ParsedArgs& args) {
     }
 }
 
+void handleAcOfficial(const ParsedArgs& args) {
+    const auto protocol = normalizedOption(args.get("protocol", "midea1"));
+    Bytes code;
+    if (protocol == "midea1") {
+        echoir::OfficialMidea1Options options;
+        applyCommonMideaOptions(args, options);
+        if (args.has("timer-index")) {
+            const int timer = parseInt(args.get("timer-index"), "timer-index");
+            if (timer < 0 || timer > 7) {
+                throw std::invalid_argument("--timer-index must be 0..7");
+            }
+            options.timerIndex = static_cast<std::uint8_t>(timer);
+        }
+        code = echoir::encodeOfficialMidea1(options);
+    } else if (protocol == "midea2") {
+        if (args.has("timer-index")) {
+            throw std::invalid_argument("--timer-index is only supported by --protocol midea1");
+        }
+        echoir::OfficialMidea2Options options;
+        applyCommonMideaOptions(args, options);
+        code = echoir::encodeOfficialMidea2(options);
+    } else {
+        throw std::invalid_argument("currently supported official AC protocols: midea1, midea2");
+    }
+
+    const auto address = parseByte(args.get("address", "FF"), "address");
+    const auto frame = echoir::encodeFrame(address, 0x22, code);
+
+    if (args.has("out")) {
+        echoir::StoredCode stored;
+        stored.name = args.get("name", protocol + "_official");
+        stored.createdAt = echoir::currentTimestamp();
+        stored.address = address;
+        stored.afn = 0x22;
+        stored.data = code;
+        stored.frame = frame;
+        echoir::saveStoredCode(args.get("out"), stored);
+        std::cout << "saved " << args.get("out") << " bytes=" << code.size() << "\n";
+    }
+
+    if (args.has("dry-run")) {
+        std::cout << echoir::toHex(frame) << "\n";
+        return;
+    }
+
+    auto device = openDevice(args);
+    printAck(device->sendExternal(code));
+}
+
 int runCommand(const std::string& command, const ParsedArgs& args) {
     if (command == "help" || command == "--help" || command == "-h") {
         usage();
@@ -268,6 +353,10 @@ int runCommand(const std::string& command, const ParsedArgs& args) {
     }
     if (command == "ac") {
         handleAc(args);
+        return 0;
+    }
+    if (command == "ac-official") {
+        handleAcOfficial(args);
         return 0;
     }
     if (command == "list") {

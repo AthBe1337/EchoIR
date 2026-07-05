@@ -1,4 +1,5 @@
 #include "echoir/ac.hpp"
+#include "echoir/ac_official.hpp"
 #include "echoir/code_store.hpp"
 #include "echoir/device.hpp"
 #include "echoir/frame.hpp"
@@ -113,6 +114,51 @@ void testAcEncoding() {
     require(daikin2 && *daikin2 == 0x91, "builtin daikin2 brand code");
 }
 
+void testOfficialMidea1Encoding() {
+    echoir::OfficialMidea1Options options;
+    options.power = true;
+    options.mode = echoir::AcMode::Cool;
+    options.temperature = 24;
+    options.fan = echoir::AcFan::Auto;
+
+    const auto durations = echoir::generateMidea1Durations(options);
+    require(durations.size() == 299, "Midea1 power-on duration count");
+    require(durations[0] == 4400 && durations[1] == 4400, "Midea1 leader");
+    require(durations[198] == 540 && durations[199] == 5220, "Midea1 third packet gap");
+    require(durations[200] == 4400 && durations[201] == 4400, "Midea1 third packet leader");
+    require(durations.back() == 540, "Midea1 trailing mark");
+
+    const auto code = echoir::encodeOfficialMidea1(options);
+    require(code.size() > durations.size(), "Midea1 compressed code uses varints for long durations");
+    requireEq(Bytes(code.begin(), code.begin() + 4), {0xA6, 0x04, 0xA6, 0x04}, "Midea1 compressed leader");
+
+    const auto frame = echoir::encodeFrame(0xFF, 0x22, code);
+    const auto decoded = echoir::decodeFrame(frame);
+    require(decoded.afn == 0x22, "Midea1 official frame uses external-code AFN");
+    requireEq(decoded.data, code, "Midea1 official frame payload");
+}
+
+void testOfficialMidea2Encoding() {
+    echoir::OfficialMidea2Options options;
+    options.power = true;
+    options.mode = echoir::AcMode::Cool;
+    options.temperature = 24;
+    options.fan = echoir::AcFan::Auto;
+
+    const auto durations = echoir::generateMidea2Durations(options);
+    require(durations.size() == 199, "Midea2 duration count");
+    require(durations[0] == 4400 && durations[1] == 4400, "Midea2 leader");
+    require(durations.back() == 540, "Midea2 trailing mark");
+
+    const auto code = echoir::encodeOfficialMidea2(options);
+    requireEq(Bytes(code.begin(), code.begin() + 4), {0xA6, 0x04, 0xA6, 0x04}, "Midea2 compressed leader");
+
+    const auto frame = echoir::encodeFrame(0xFF, 0x22, code);
+    const auto decoded = echoir::decodeFrame(frame);
+    require(decoded.afn == 0x22, "Midea2 official frame uses external-code AFN");
+    requireEq(decoded.data, code, "Midea2 official frame payload");
+}
+
 void testDeviceAckCommand() {
     auto fake = fakeWithRead(echoir::fromHex("68 08 00 00 01 00 01 16"));
     auto* raw = fake.get();
@@ -158,6 +204,8 @@ int main() {
         {"frame_encoding", testFrameEncoding},
         {"frame_resync", testFrameResync},
         {"ac_encoding", testAcEncoding},
+        {"official_midea1_encoding", testOfficialMidea1Encoding},
+        {"official_midea2_encoding", testOfficialMidea2Encoding},
         {"device_ack_command", testDeviceAckCommand},
         {"device_read_internal", testDeviceReadInternal},
         {"code_store", testCodeStore},
