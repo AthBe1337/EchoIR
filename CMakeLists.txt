@@ -34,8 +34,48 @@ add_executable(echoir-cli src/cli.cpp)
 target_link_libraries(echoir-cli PRIVATE echoir)
 set_target_properties(echoir-cli PROPERTIES OUTPUT_NAME echoir)
 
+find_program(NPM_EXECUTABLE npm)
+if(NPM_EXECUTABLE)
+    set(ECHOIR_WEB_ASSETS_CPP ${CMAKE_CURRENT_BINARY_DIR}/generated/echoir_web_assets.cpp)
+    set(ECHOIR_WEB_ASSETS_HPP ${CMAKE_CURRENT_BINARY_DIR}/generated/echoir_web_assets.hpp)
+    add_custom_command(
+        OUTPUT
+            ${ECHOIR_WEB_ASSETS_CPP}
+            ${ECHOIR_WEB_ASSETS_HPP}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/generated
+        COMMAND ${NPM_EXECUTABLE} install
+        COMMAND ${NPM_EXECUTABLE} run build
+        COMMAND ${CMAKE_COMMAND}
+            -DWEB_DIST=${CMAKE_CURRENT_SOURCE_DIR}/web/dist
+            -DOUT_CPP=${ECHOIR_WEB_ASSETS_CPP}
+            -DOUT_HPP=${ECHOIR_WEB_ASSETS_HPP}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedWebAssets.cmake
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/web
+        DEPENDS
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedWebAssets.cmake
+            ${CMAKE_CURRENT_SOURCE_DIR}/web/index.html
+            ${CMAKE_CURRENT_SOURCE_DIR}/web/package-lock.json
+            ${CMAKE_CURRENT_SOURCE_DIR}/web/package.json
+            ${CMAKE_CURRENT_SOURCE_DIR}/web/src/main.jsx
+            ${CMAKE_CURRENT_SOURCE_DIR}/web/src/styles.css
+            ${CMAKE_CURRENT_SOURCE_DIR}/web/vite.config.js
+        COMMENT "Building and embedding EchoIR web UI"
+        VERBATIM
+    )
+    add_custom_target(echoir_web_assets DEPENDS ${ECHOIR_WEB_ASSETS_CPP} ${ECHOIR_WEB_ASSETS_HPP})
+    add_dependencies(echoir-cli echoir_web_assets)
+    target_sources(echoir-cli PRIVATE src/web_server.cpp ${ECHOIR_WEB_ASSETS_CPP})
+    target_include_directories(echoir-cli PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    target_compile_definitions(echoir-cli PRIVATE ECHOIR_HAS_EMBEDDED_WEB=1)
+else()
+    message(WARNING "npm was not found; embedded web server will not be built into echoir")
+endif()
+
 if(MINGW)
     target_link_options(echoir-cli PRIVATE -static -static-libgcc -static-libstdc++)
+    if(NPM_EXECUTABLE)
+        target_link_libraries(echoir-cli PRIVATE ws2_32)
+    endif()
 endif()
 
 enable_testing()

@@ -3,6 +3,9 @@
 #include "echoir/code_store.hpp"
 #include "echoir/device.hpp"
 #include "echoir/serial.hpp"
+#ifdef ECHOIR_HAS_EMBEDDED_WEB
+#include "echoir/web_server.hpp"
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -11,6 +14,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <sstream>
@@ -56,6 +60,7 @@ void usage() {
         << "  echoir send-external --in tv_power.json\n"
         << "  echoir list [--dir .]\n"
         << "  echoir dump --in tv_power.json\n"
+        << "  echoir web [--http-host 127.0.0.1[,HOST...]] [--http-port 8787] [--port auto|PATH] [--code-dir codes]\n"
         << "  echoir ac [--brand midea|--brand-code 00] [--power on] [--mode cool] [--temp 26] [--fan mid]\n"
         << "  echoir ac-official --protocol midea1 [--power on] [--mode cool] [--temp 24] [--fan auto] [--swing-index 0]\n"
         << "  echoir ac-official --protocol gree1 --fields 32=1,33=1,37=8 --dry-run\n"
@@ -467,6 +472,125 @@ void handleAcOfficial(const ParsedArgs& args) {
     printAck(device->sendExternal(code));
 }
 
+int runCommand(const std::string& command, const ParsedArgs& args);
+
+#ifdef ECHOIR_HAS_EMBEDDED_WEB
+std::vector<std::string> parseHostList(const std::string& text) {
+    std::vector<std::string> hosts;
+    std::size_t start = 0;
+    while (start <= text.size()) {
+        const auto end = text.find(',', start);
+        auto host = trim(text.substr(start, end == std::string::npos ? std::string::npos : end - start));
+        if (host == "*") {
+            host = "0.0.0.0";
+        }
+        if (host.empty()) {
+            throw std::invalid_argument("--http-host contains an empty host");
+        }
+        hosts.push_back(host);
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return hosts;
+}
+
+std::string platformDefaultSerialPort() {
+#ifdef _WIN32
+    return "COM3";
+#else
+    return "/dev/ttyUSB0";
+#endif
+}
+
+void addDetectedPort(std::vector<std::string>& ports, std::set<std::string>& seen, const std::filesystem::path& path) {
+    const auto text = path.string();
+    if (seen.insert(text).second) {
+        ports.push_back(text);
+    }
+}
+
+std::vector<std::string> detectSerialPorts() {
+    std::vector<std::string> ports;
+    std::set<std::string> seen;
+#ifdef _WIN32
+    for (int index = 1; index <= 32; ++index) {
+        addDetectedPort(ports, seen, "COM" + std::to_string(index));
+    }
+#else
+    const std::filesystem::path byId("/dev/serial/by-id");
+    if (std::filesystem::exists(byId)) {
+        std::vector<std::filesystem::path> entries;
+        for (const auto& entry : std::filesystem::directory_iterator(byId)) {
+            entries.push_back(entry.path());
+        }
+        std::sort(entries.begin(), entries.end());
+        for (const auto& entry : entries) {
+            addDetectedPort(ports, seen, entry);
+        }
+    }
+
+    const std::filesystem::path dev("/dev");
+    if (std::filesystem::exists(dev)) {
+        std::vector<std::filesystem::path> entries;
+        for (const auto& entry : std::filesystem::directory_iterator(dev)) {
+            const auto name = entry.path().filename().string();
+            if (name.rfind("ttyUSB", 0) == 0 || name.rfind("ttyACM", 0) == 0) {
+                entries.push_back(entry.path());
+            }
+        }
+        std::sort(entries.begin(), entries.end());
+        for (const auto& entry : entries) {
+            addDetectedPort(ports, seen, entry);
+        }
+    }
+#endif
+    return ports;
+}
+
+void handleWeb(const ParsedArgs& args) {
+    echoir::WebServerConfig config;
+    config.port = parseInt(args.get("http-port", "8787"), "http-port");
+    if (config.port <= 0 || config.port > 65535) {
+        throw std::invalid_argument("--http-port must be 1..65535");
+    }
+    config.hosts = parseHostList(args.get("http-host", "127.0.0.1"));
+    config.detectedSerialPorts = detectSerialPorts();
+    const auto serialPort = args.get("port", "auto");
+    if (serialPort == "auto") {
+        config.serialPort = config.detectedSerialPorts.empty() ? platformDefaultSerialPort()
+                                                               : config.detectedSerialPorts.front();
+    } else {
+        config.serialPort = serialPort;
+        if (std::find(config.detectedSerialPorts.begin(), config.detectedSerialPorts.end(), serialPort) ==
+            config.detectedSerialPorts.end()) {
+            config.detectedSerialPorts.insert(config.detectedSerialPorts.begin(), serialPort);
+        }
+    }
+    config.codeDirectory = args.get("code-dir", "codes");
+
+    auto runner = [](const std::string& command,
+                     const std::map<std::string, std::string>& options) -> echoir::WebCommandResult {
+        ParsedArgs parsed;
+        parsed.options = options;
+
+        std::ostringstream output;
+        auto* previous = std::cout.rdbuf(output.rdbuf());
+        try {
+            const int exitCode = runCommand(command, parsed);
+            std::cout.rdbuf(previous);
+            return {exitCode, output.str()};
+        } catch (...) {
+            std::cout.rdbuf(previous);
+            throw;
+        }
+    };
+
+    echoir::runEmbeddedWebServer(config, runner);
+}
+#endif
+
 int runCommand(const std::string& command, const ParsedArgs& args) {
     if (command == "help" || command == "--help" || command == "-h") {
         usage();
@@ -503,6 +627,14 @@ int runCommand(const std::string& command, const ParsedArgs& args) {
             std::cout << "frame: " << echoir::toHex(code.frame) << "\n";
         }
         return 0;
+    }
+    if (command == "web") {
+#ifdef ECHOIR_HAS_EMBEDDED_WEB
+        handleWeb(args);
+        return 0;
+#else
+        throw std::invalid_argument("embedded web support was not built");
+#endif
     }
 
     auto device = openDevice(args);
